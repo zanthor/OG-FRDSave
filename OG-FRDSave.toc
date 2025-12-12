@@ -1,0 +1,8 @@
+## Interface: 11200
+## Title: OG-FRDSave
+## Author: Gnuzmas
+## Version: 1.0.0
+## Notes: Automatically swaps Force Reactive Disk when durability gets low
+## SavedVariables: OGFRD_SV
+
+OG-FRDSave.lua
