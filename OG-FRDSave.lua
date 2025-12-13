@@ -27,6 +27,10 @@ frame:RegisterEvent("PLAYER_REGEN_ENABLED")   -- Leaving combat
 local timeSinceLastCheck = 0
 local CHECK_INTERVAL = 2  -- Check every 2 seconds
 
+-- Warning message tracking
+local timeSinceLastWarning = 0
+local WARNING_INTERVAL = 30  -- Warn every 30 seconds
+
 -- Parse durability from tooltip text (e.g., "Durability 95 / 120")
 local function ParseDurability(tooltipText)
   if not tooltipText then return nil, nil end
@@ -123,8 +127,17 @@ local function CheckAndSwapShield()
   
   -- Check if we have durability info
   if not current or not maximum then
+    -- Warn user that durability cannot be read
+    timeSinceLastWarning = timeSinceLastWarning + timeSinceLastCheck
+    if timeSinceLastWarning >= WARNING_INTERVAL then
+      DEFAULT_CHAT_FRAME:AddMessage("|cffff8800[FRD-Save]|r |cffff0000WARNING:|r Cannot read Force Reactive Disk durability. Type /reload to fix.")
+      timeSinceLastWarning = 0
+    end
     return
   end
+  
+  -- Reset warning timer when durability is readable
+  timeSinceLastWarning = 0
   
   -- Check if durability is low
   if current >= OGFRD_SV.swapThreshold then
@@ -229,6 +242,10 @@ local function SlashCommandHandler(msg)
   elseif string.find(msg, "^swap%s+%d+$") then
     -- Set swap threshold
     local threshold = tonumber(string.match(msg, "swap%s+(%d+)"))
+    if threshold > 99 then
+      DEFAULT_CHAT_FRAME:AddMessage("|cffff8800[FRD-Save]|r |cffff0000ERROR:|r Swap threshold cannot exceed 99 (prevents endless loop)")
+      return
+    end
     OGFRD_SV.swapThreshold = threshold
     DEFAULT_CHAT_FRAME:AddMessage("|cffff8800[FRD-Save]|r Swap threshold set to: " .. threshold)
     
