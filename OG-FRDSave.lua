@@ -3,12 +3,14 @@
 
 local FORCE_REACTIVE_DISK = 18168
 local SHIELD_SLOT = 17  -- Off-hand/shield slot
+local ARGENT_DEFENDER = 13243  -- Argent Defender
 
 -- Saved variables
 OGFRD_SV = OGFRD_SV or {
   enabled = true,
   backupShield = 1168,  -- Default backup shield
-  swapThreshold = 20  -- Durability threshold to trigger swap
+  swapThreshold = 20,  -- Durability threshold to trigger swap
+  argentDefenderMode = false  -- Argent Defender mode
 }
 
 -- Hidden tooltip for scanning
@@ -112,11 +114,90 @@ local function EquipItemFromBags(bag, slot)
   PickupInventoryItem(SHIELD_SLOT)
 end
 
+-- Get player health percentage
+local function GetHealthPercentage()
+  local health = UnitHealth("player")
+  local maxHealth = UnitHealthMax("player")
+  if maxHealth == 0 then return 0 end
+  return (health / maxHealth) * 100
+end
+
+-- Get player block skill value
+local function GetBlockSkill()
+  -- Block skill is index 15 in GetSkillLineInfo
+  -- We need to scan through skills to find "Block"
+  for i = 1, GetNumSkillLines() do
+    local skillName, isHeader, _, skillRank, _, _, skillMaxRank = GetSkillLineInfo(i)
+    if not isHeader and skillName == "Block" then
+      return skillRank or 0
+    end
+  end
+  return 0
+end
+
+-- Argent Defender mode logic
+local function CheckArgentDefender()
+  if not OGFRD_SV.argentDefenderMode then
+    return
+  end
+  
+  local equippedID = GetEquippedShieldInfo()
+  local healthPercent = GetHealthPercentage()
+  local blockSkill = GetBlockSkill()
+  
+  -- Check if we should equip Argent Defender (13243)
+  if equippedID ~= ARGENT_DEFENDER then
+    -- If health > 80% and block < 50, equip Argent Defender
+    if healthPercent > 80 and blockSkill < 50 then
+      local bag, slot = FindItemInBags(ARGENT_DEFENDER)
+      if bag then
+        DEFAULT_CHAT_FRAME:AddMessage("|cffff8800[FRD-Save]|r Argent Defender Mode: Equipping Argent Defender (Block: " .. blockSkill .. ", Health: " .. string.format("%.1f", healthPercent) .. "%)")
+        EquipItemFromBags(bag, slot)
+        return
+      end
+    end
+  else
+    -- We have Argent Defender equipped, check if block > 50 OR health <= 80%
+    if blockSkill > 50 or healthPercent <= 80 then
+      -- Find highest durability Force Reactive Disk
+      local bag, slot, bagCurrent, bagMaximum = FindItemInBags(FORCE_REACTIVE_DISK)
+      if bag and bagCurrent then
+        -- Look for additional FRDs and find the one with highest durability
+        local bestBag, bestSlot, bestDurability = bag, slot, bagCurrent
+        
+        for checkBag = 0, 4 do
+          for checkSlot = 1, GetContainerNumSlots(checkBag) do
+            local link = GetContainerItemLink(checkBag, checkSlot)
+            if link then
+              local _, _, foundItemID = string.find(link, "item:(%d+)")
+              foundItemID = tonumber(foundItemID)
+              if foundItemID == FORCE_REACTIVE_DISK then
+                local current, maximum = GetBagItemDurability(checkBag, checkSlot)
+                if current and current > bestDurability then
+                  bestBag, bestSlot, bestDurability = checkBag, checkSlot, current
+                end
+              end
+            end
+          end
+        end
+        
+        local reason = blockSkill > 50 and "Block: " .. blockSkill or "Health: " .. string.format("%.1f", healthPercent) .. "%"
+        DEFAULT_CHAT_FRAME:AddMessage("|cffff8800[FRD-Save]|r Argent Defender Mode: Equipping Force Reactive Disk (" .. reason .. ", Durability: " .. bestDurability .. "/" .. bagMaximum .. ")")
+        EquipItemFromBags(bestBag, bestSlot)
+        return
+      end
+    end
+  end
+end
+
 -- Main durability check logic
 local function CheckAndSwapShield()
   if not OGFRD_SV.enabled then
     return
   end
+  
+  -- Check Argent Defender mode first
+  CheckArgentDefender()
   
   local equippedID, current, maximum = GetEquippedShieldInfo()
   
@@ -180,6 +261,9 @@ frame:SetScript("OnEvent", function()
     if not OGFRD_SV.swapThreshold then
       OGFRD_SV.swapThreshold = 20
     end
+    if OGFRD_SV.argentDefenderMode == nil then
+      OGFRD_SV.argentDefenderMode = false
+    end
     
     DEFAULT_CHAT_FRAME:AddMessage("|cffff8800[FRD-Save]|r Loaded. Type /frd for help.")
     
@@ -219,10 +303,12 @@ local function SlashCommandHandler(msg)
   elseif msg == "status" then
     -- Show status
     local statusText = OGFRD_SV.enabled and "|cff00ff00Enabled|r" or "|cffff0000Disabled|r"
+    local argentText = OGFRD_SV.argentDefenderMode and "|cff00ff00Enabled|r" or "|cffff0000Disabled|r"
     -- Try to find backup shield link in bags
     local backupBag, backupSlot = FindItemInBags(OGFRD_SV.backupShield)
     local backupLink = backupBag and GetContainerItemLink(backupBag, backupSlot)
     DEFAULT_CHAT_FRAME:AddMessage("|cffff8800[FRD-Save]|r Status: " .. statusText)
+    DEFAULT_CHAT_FRAME:AddMessage("|cffff8800[FRD-Save]|r Argent Defender Mode: " .. argentText)
     DEFAULT_CHAT_FRAME:AddMessage("|cffff8800[FRD-Save]|r Swap Threshold: " .. OGFRD_SV.swapThreshold)
     DEFAULT_CHAT_FRAME:AddMessage("|cffff8800[FRD-Save]|r Backup Shield: " .. (backupLink or ("ItemID: " .. OGFRD_SV.backupShield)))
     
@@ -237,6 +323,25 @@ local function SlashCommandHandler(msg)
       end
     else
       DEFAULT_CHAT_FRAME:AddMessage("|cffff8800[FRD-Save]|r Equipped Shield: None")
+    end
+    
+    -- Show Argent Defender mode status
+    if OGFRD_SV.argentDefenderMode then
+      local healthPercent = GetHealthPercentage()
+      local blockSkill = GetBlockSkill()
+      DEFAULT_CHAT_FRAME:AddMessage("|cffff8800[FRD-Save]|r Current Health: " .. string.format("%.1f", healthPercent) .. "%")
+      DEFAULT_CHAT_FRAME:AddMessage("|cffff8800[FRD-Save]|r Current Block Skill: " .. blockSkill)
+    end
+    
+  elseif msg == "argent" then
+    -- Toggle Argent Defender mode
+    OGFRD_SV.argentDefenderMode = not OGFRD_SV.argentDefenderMode
+    if OGFRD_SV.argentDefenderMode then
+      DEFAULT_CHAT_FRAME:AddMessage("|cffff8800[FRD-Save]|r Argent Defender Mode: |cff00ff00Enabled|r")
+      DEFAULT_CHAT_FRAME:AddMessage("|cffff8800[FRD-Save]|r Will swap to Argent Defender when Health > 80% and Block < 50")
+      DEFAULT_CHAT_FRAME:AddMessage("|cffff8800[FRD-Save]|r Will swap to Force Reactive Disk when Block > 50 or Health <= 80%")
+    else
+      DEFAULT_CHAT_FRAME:AddMessage("|cffff8800[FRD-Save]|r Argent Defender Mode: |cffff0000Disabled|r")
     end
     
   elseif string.find(msg, "^swap%s+%d+$") then
@@ -276,6 +381,7 @@ local function SlashCommandHandler(msg)
     DEFAULT_CHAT_FRAME:AddMessage("|cffff8800[FRD-Save]|r Commands:")
     DEFAULT_CHAT_FRAME:AddMessage("  /frd - Toggle on/off")
     DEFAULT_CHAT_FRAME:AddMessage("  /frd status - Show current status")
+    DEFAULT_CHAT_FRAME:AddMessage("  /frd argent - Toggle Argent Defender mode")
     DEFAULT_CHAT_FRAME:AddMessage("  /frd swap <number> - Set durability threshold (e.g., /frd swap 20)")
     DEFAULT_CHAT_FRAME:AddMessage("  /frd <itemID> - Set backup shield (e.g., /frd 1168)")
     DEFAULT_CHAT_FRAME:AddMessage("  /frd [ItemLink] - Set backup shield from item link")
