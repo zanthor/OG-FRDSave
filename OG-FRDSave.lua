@@ -10,7 +10,13 @@ OGFRD_SV = OGFRD_SV or {
   enabled = true,
   backupShield = 1168,  -- Default backup shield
   swapThreshold = 20,  -- Durability threshold to trigger swap
-  argentDefenderMode = false  -- Argent Defender mode
+  argentDefenderMode = false,  -- Argent Defender mode
+  
+  -- Trinket swapping
+  trinketSwapEnabled = true,  -- Enable/disable trinket swapping
+  lootTrinket = 19812,  -- Rune of the Guard Captain (looting trinket)
+  combatTrinket = 55363,  -- Diamond Flask (combat trinket)
+  trinketSlot = 13  -- Which trinket slot to swap (13 or 14)
 }
 
 -- Hidden tooltip for scanning
@@ -24,6 +30,8 @@ frame:RegisterEvent("UPDATE_INVENTORY_DURABILITY")
 frame:RegisterEvent("UNIT_INVENTORY_CHANGED")
 frame:RegisterEvent("PLAYER_REGEN_DISABLED")  -- Entering combat
 frame:RegisterEvent("PLAYER_REGEN_ENABLED")   -- Leaving combat
+frame:RegisterEvent("LOOT_OPENED")  -- Started looting
+frame:RegisterEvent("LOOT_CLOSED")  -- Stopped looting
 
 -- Periodic check timer
 local timeSinceLastCheck = 0
@@ -32,6 +40,13 @@ local CHECK_INTERVAL = 2  -- Check every 2 seconds
 -- Warning message tracking
 local timeSinceLastWarning = 0
 local WARNING_INTERVAL = 30  -- Warn every 30 seconds
+
+-- Trinket swapping state
+local isInLootMode = false
+local lootTimer = nil
+local LOOT_TIMEOUT = 5  -- Seconds after last loot to swap back to combat trinket
+local combatEndTimer = nil
+local COMBAT_END_DELAY = 1  -- 1 second delay after leaving combat before swapping trinket
 
 -- Parse durability from tooltip text (e.g., "Durability 95 / 120")
 local function ParseDurability(tooltipText)
@@ -109,9 +124,10 @@ local function GetEquippedShieldInfo()
 end
 
 -- Equip item from bags
-local function EquipItemFromBags(bag, slot)
+local function EquipItemFromBags(bag, slot, inventorySlot)
+  inventorySlot = inventorySlot or SHIELD_SLOT
   PickupContainerItem(bag, slot)
-  PickupInventoryItem(SHIELD_SLOT)
+  PickupInventoryItem(inventorySlot)
 end
 
 -- Get player health percentage
@@ -247,6 +263,59 @@ local function CheckAndSwapShield()
   DEFAULT_CHAT_FRAME:AddMessage("|cffff8800[FRD-Save]|r |cffff0000ERROR:|r No replacement shield found!")
 end
 
+--[[ Trinket Swapping System ]]
+
+-- Equip trinket by ID
+local function EquipTrinketByID(itemID, trinketSlot)
+  if not itemID or not trinketSlot then return false end
+  
+  local bag, slot = FindItemInBags(itemID)
+  if bag and slot then
+    local _, _, isLocked = GetContainerItemInfo(bag, slot)
+    if not isLocked and not IsInventoryItemLocked(trinketSlot) then
+      PickupContainerItem(bag, slot)
+      PickupInventoryItem(trinketSlot)
+      return true
+    end
+  end
+  return false
+end
+
+-- Start loot mode - equip looting trinket
+local function StartLootMode()
+  if not OGFRD_SV.trinketSwapEnabled then return end
+  
+  -- Only swap trinkets in Stratholme
+  local zone = GetRealZoneText()
+  if zone ~= "Stratholme" then return end
+  
+  if not isInLootMode then
+    isInLootMode = true
+    lootTimer = GetTime() + LOOT_TIMEOUT
+    
+    -- Equip looting trinket
+    if EquipTrinketByID(OGFRD_SV.lootTrinket, OGFRD_SV.trinketSlot) then
+      DEFAULT_CHAT_FRAME:AddMessage("|cffff8800[FRD-Save]|r Looting mode: Equipped looting trinket")
+    end
+  else
+    -- Already in loot mode, just reset timer
+    lootTimer = GetTime() + LOOT_TIMEOUT
+  end
+end
+
+-- Stop loot mode - equip combat trinket
+local function StopLootMode()
+  if not isInLootMode then return end
+  
+  isInLootMode = false
+  lootTimer = nil
+  
+  -- Equip combat trinket
+  if EquipTrinketByID(OGFRD_SV.combatTrinket, OGFRD_SV.trinketSlot) then
+    DEFAULT_CHAT_FRAME:AddMessage("|cffff8800[FRD-Save]|r Looting timeout: Equipped combat trinket")
+  end
+end
+
 -- Event handler
 frame:SetScript("OnEvent", function()
   if event == "VARIABLES_LOADED" then
@@ -264,6 +333,18 @@ frame:SetScript("OnEvent", function()
     if OGFRD_SV.argentDefenderMode == nil then
       OGFRD_SV.argentDefenderMode = false
     end
+    if OGFRD_SV.trinketSwapEnabled == nil then
+      OGFRD_SV.trinketSwapEnabled = true
+    end
+    if not OGFRD_SV.lootTrinket then
+      OGFRD_SV.lootTrinket = 19812
+    end
+    if not OGFRD_SV.combatTrinket then
+      OGFRD_SV.combatTrinket = 55363
+    end
+    if not OGFRD_SV.trinketSlot then
+      OGFRD_SV.trinketSlot = 13
+    end
     
     DEFAULT_CHAT_FRAME:AddMessage("|cffff8800[FRD-Save]|r Loaded. Type /frd for help.")
     
@@ -271,8 +352,23 @@ frame:SetScript("OnEvent", function()
     CheckAndSwapShield()
   elseif event == "UNIT_INVENTORY_CHANGED" and arg1 == "player" then
     CheckAndSwapShield()
-  elseif event == "PLAYER_REGEN_DISABLED" or event == "PLAYER_REGEN_ENABLED" then
+  elseif event == "PLAYER_REGEN_DISABLED" then
     CheckAndSwapShield()
+  elseif event == "PLAYER_REGEN_ENABLED" then
+    CheckAndSwapShield()
+    -- Set timer to equip looting trinket 1 second after leaving combat
+    combatEndTimer = GetTime() + COMBAT_END_DELAY
+  elseif event == "LOOT_OPENED" then
+    -- Started looting - equip loot trinket if not in combat
+    if not UnitAffectingCombat("player") then
+      combatEndTimer = nil  -- Cancel delayed swap
+      StartLootMode()
+    end
+  elseif event == "LOOT_CLOSED" then
+    -- Stopped looting - reset timer
+    if lootTimer then
+      lootTimer = GetTime() + LOOT_TIMEOUT
+    end
   end
 end)
 
@@ -282,6 +378,17 @@ frame:SetScript("OnUpdate", function()
   if timeSinceLastCheck >= CHECK_INTERVAL then
     timeSinceLastCheck = 0
     CheckAndSwapShield()
+  end
+  
+  -- Check combat end timer
+  if combatEndTimer and GetTime() >= combatEndTimer then
+    combatEndTimer = nil
+    StartLootMode()
+  end
+  
+  -- Check loot timer
+  if lootTimer and GetTime() >= lootTimer then
+    StopLootMode()
   end
 end)
 
@@ -304,6 +411,8 @@ local function SlashCommandHandler(msg)
     -- Show status
     local statusText = OGFRD_SV.enabled and "|cff00ff00Enabled|r" or "|cffff0000Disabled|r"
     local argentText = OGFRD_SV.argentDefenderMode and "|cff00ff00Enabled|r" or "|cffff0000Disabled|r"
+    local trinketText = OGFRD_SV.trinketSwapEnabled and "|cff00ff00Enabled|r" or "|cffff0000Disabled|r"
+    
     -- Try to find backup shield link in bags
     local backupBag, backupSlot = FindItemInBags(OGFRD_SV.backupShield)
     local backupLink = backupBag and GetContainerItemLink(backupBag, backupSlot)
@@ -333,6 +442,24 @@ local function SlashCommandHandler(msg)
       DEFAULT_CHAT_FRAME:AddMessage("|cffff8800[FRD-Save]|r Current Block Skill: " .. blockSkill)
     end
     
+    -- Show trinket swapping status
+    DEFAULT_CHAT_FRAME:AddMessage("|cffff8800[FRD-Save]|r Trinket Swapping: " .. trinketText)
+    if OGFRD_SV.trinketSwapEnabled then
+      local lootBag, lootSlot = FindItemInBags(OGFRD_SV.lootTrinket)
+      local lootLink = lootBag and GetContainerItemLink(lootBag, lootSlot)
+      local combatBag, combatSlot = FindItemInBags(OGFRD_SV.combatTrinket)
+      local combatLink = combatBag and GetContainerItemLink(combatBag, combatSlot)
+      DEFAULT_CHAT_FRAME:AddMessage("|cffff8800[FRD-Save]|r Trinket Slot: " .. OGFRD_SV.trinketSlot)
+      DEFAULT_CHAT_FRAME:AddMessage("|cffff8800[FRD-Save]|r Loot Trinket: " .. (lootLink or ("ItemID: " .. OGFRD_SV.lootTrinket)))
+      DEFAULT_CHAT_FRAME:AddMessage("|cffff8800[FRD-Save]|r Combat Trinket: " .. (combatLink or ("ItemID: " .. OGFRD_SV.combatTrinket)))
+      if isInLootMode then
+        local timeLeft = lootTimer and math.ceil(lootTimer - GetTime()) or 0
+        DEFAULT_CHAT_FRAME:AddMessage("|cffff8800[FRD-Save]|r Loot Mode: |cff00ff00Active|r (timeout in " .. timeLeft .. "s)")
+      else
+        DEFAULT_CHAT_FRAME:AddMessage("|cffff8800[FRD-Save]|r Loot Mode: |cffccccccInactive|r")
+      end
+    end
+    
   elseif msg == "argent" then
     -- Toggle Argent Defender mode
     OGFRD_SV.argentDefenderMode = not OGFRD_SV.argentDefenderMode
@@ -343,6 +470,45 @@ local function SlashCommandHandler(msg)
     else
       DEFAULT_CHAT_FRAME:AddMessage("|cffff8800[FRD-Save]|r Argent Defender Mode: |cffff0000Disabled|r")
     end
+    
+  elseif msg == "trinket" then
+    -- Toggle trinket swapping
+    OGFRD_SV.trinketSwapEnabled = not OGFRD_SV.trinketSwapEnabled
+    if OGFRD_SV.trinketSwapEnabled then
+      DEFAULT_CHAT_FRAME:AddMessage("|cffff8800[FRD-Save]|r Trinket Swapping: |cff00ff00Enabled|r")
+    else
+      DEFAULT_CHAT_FRAME:AddMessage("|cffff8800[FRD-Save]|r Trinket Swapping: |cffff0000Disabled|r")
+      -- Stop loot mode if active
+      if isInLootMode then
+        StopLootMode()
+      end
+    end
+    
+  elseif string.find(msg, "^trinket%s+slot%s+%d+$") then
+    -- Set trinket slot (13 or 14)
+    local slot = tonumber(string.match(msg, "slot%s+(%d+)"))
+    if slot ~= 13 and slot ~= 14 then
+      DEFAULT_CHAT_FRAME:AddMessage("|cffff8800[FRD-Save]|r |cffff0000ERROR:|r Trinket slot must be 13 or 14")
+      return
+    end
+    OGFRD_SV.trinketSlot = slot
+    DEFAULT_CHAT_FRAME:AddMessage("|cffff8800[FRD-Save]|r Trinket slot set to: " .. slot)
+    
+  elseif string.find(msg, "^trinket%s+loot%s+%d+$") then
+    -- Set loot trinket by item ID
+    local itemID = tonumber(string.match(msg, "loot%s+(%d+)"))
+    OGFRD_SV.lootTrinket = itemID
+    local itemBag, itemSlot = FindItemInBags(itemID)
+    local itemLink = itemBag and GetContainerItemLink(itemBag, itemSlot)
+    DEFAULT_CHAT_FRAME:AddMessage("|cffff8800[FRD-Save]|r Loot trinket set to: " .. (itemLink or ("ItemID: " .. itemID)))
+    
+  elseif string.find(msg, "^trinket%s+combat%s+%d+$") then
+    -- Set combat trinket by item ID
+    local itemID = tonumber(string.match(msg, "combat%s+(%d+)"))
+    OGFRD_SV.combatTrinket = itemID
+    local itemBag, itemSlot = FindItemInBags(itemID)
+    local itemLink = itemBag and GetContainerItemLink(itemBag, itemSlot)
+    DEFAULT_CHAT_FRAME:AddMessage("|cffff8800[FRD-Save]|r Combat trinket set to: " .. (itemLink or ("ItemID: " .. itemID)))
     
   elseif string.find(msg, "^swap%s+%d+$") then
     -- Set swap threshold
@@ -385,6 +551,11 @@ local function SlashCommandHandler(msg)
     DEFAULT_CHAT_FRAME:AddMessage("  /frd swap <number> - Set durability threshold (e.g., /frd swap 20)")
     DEFAULT_CHAT_FRAME:AddMessage("  /frd <itemID> - Set backup shield (e.g., /frd 1168)")
     DEFAULT_CHAT_FRAME:AddMessage("  /frd [ItemLink] - Set backup shield from item link")
+    DEFAULT_CHAT_FRAME:AddMessage("|cffff8800Trinket Swapping:|r")
+    DEFAULT_CHAT_FRAME:AddMessage("  /frd trinket - Toggle trinket swapping")
+    DEFAULT_CHAT_FRAME:AddMessage("  /frd trinket slot <13|14> - Set trinket slot to swap")
+    DEFAULT_CHAT_FRAME:AddMessage("  /frd trinket loot <itemID> - Set looting trinket")
+    DEFAULT_CHAT_FRAME:AddMessage("  /frd trinket combat <itemID> - Set combat trinket")
   end
 end
 
