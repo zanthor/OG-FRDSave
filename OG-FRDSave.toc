@@ -4,5 +4,6 @@
 ## Version: 1.0.0
 ## Notes: Automatically swaps Force Reactive Disk when durability gets low
 ## SavedVariables: OGFRD_SV
+## OptionalDeps: _OGAALogger
 
 OG-FRDSave.lua

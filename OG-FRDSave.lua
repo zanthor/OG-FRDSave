@@ -346,7 +346,11 @@ frame:SetScript("OnEvent", function()
       OGFRD_SV.trinketSlot = 13
     end
     
-    DEFAULT_CHAT_FRAME:AddMessage("|cffff8800[FRD-Save]|r Loaded. Type /frd for help.")
+    if OGAALogger and OGAALogger.AddMessage then
+      OGAALogger.AddMessage("FRD", "|cffff8800[FRD-Save]|r Loaded. Type /frd for help.")
+    else
+      DEFAULT_CHAT_FRAME:AddMessage("|cffff8800[FRD-Save]|r Loaded. Type /frd for help.")
+    end
     
   elseif event == "UPDATE_INVENTORY_DURABILITY" then
     CheckAndSwapShield()
